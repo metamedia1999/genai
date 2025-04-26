@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>生成AIの内部処理イメージ (ビジュアル)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* スクロールバーを消す */
+            background-color: #000; /* 背景色を黒に */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Arial', 'Meiryo', sans-serif; /* 日本語も考慮したフォント */
+        }
+        canvas {
+            display: block; /* canvas要素のデフォルトのマージンを削除 */
+        }
+    </style>
+</head>
+<body>
+    <script>
+        let inputs = []; // 入力パーティクル
+        let outputs = []; // 出力パーティクル
+        let coreSize = 80;
+        let corePulse = 0;
+        let processingVisuals = []; // 内部処理ビジュアル
+        let processingDuration = 45; // 内部処理時間を少し長く
+        let outputWaves = []; // 出力時の波紋エフェクト
+
+        const commonTokens = [ // トークンリスト (変更なし)
+            'the', 'a', 'is', 'in', 'it', 'you', 'to', 'was', 'for', 'on',
+            'are', 'as', 'with', 'his', 'they', 'I', 'at', 'be', 'this', 'have',
+            'from', 'or', 'one', 'had', 'by', 'word', 'but', 'not', 'what', 'all',
+            'were', 'we', 'when', 'your', 'can', 'said', 'there', 'use', 'an', 'each',
+            'which', 'she', 'do', 'how', 'their', 'if', 'will', 'up', 'other', 'about',
+            'out', 'many', 'then', 'them', 'these', 'so', 'some', 'her', 'would', 'make',
+            'like', 'him', 'into', 'time', 'has', 'look', 'two', 'more', 'write', 'go',
+            'see', 'number', 'no', 'way', 'could', 'people', 'my', 'than', 'first', 'water',
+            'been', 'call', 'who', 'oil', 'its', 'now', 'find', 'long', 'down', 'day',
+            'did', 'get', 'come', 'made', 'may', 'part', 'ing', 'er', 'ly', 'tion', 'ment',
+            'こんにちは', '世界', 'これ', 'は', 'です', 'ます', 'データ', '処理', '生成', 'AI', 'トークン'
+        ];
+        const processingChars = ['∑', '∫', '∂', '∇', '⊕', '⊗', '≈', '≠', '≤', '≥', '∈', '∉', '∀', '∃'];
+
+        // パーティクルクラス (変更なし)
+        class Particle {
+             constructor(isInput = true) {
+                this.isInput = isInput;
+                this.initPosition();
+                this.target = createVector(width / 2, height / 2);
+                this.vel = p5.Vector.sub(this.target, this.pos);
+                if (!this.isInput) {
+                    this.vel = p5.Vector.random2D();
+                }
+                this.vel.normalize();
+                this.vel.mult(random(1.5, 3.5));
+                this.color = isInput ? color(random(150, 255), random(100, 200), random(50, 100), 210) : color(random(50, 150), random(180, 255), random(180, 255), 230);
+                this.lifespan = 255;
+                this.token = random(commonTokens);
+                this.textSize = random(10, 16);
+                textSize(this.textSize); // 事前に計算
+                this.tokenWidth = textWidth(this.token);
+            }
+
+            initPosition() {
+                 if (this.isInput) {
+                    let edge = floor(random(4));
+                    if (edge === 0) this.pos = createVector(random(width), -20);
+                    else if (edge === 1) this.pos = createVector(random(width), height + 20);
+                    else if (edge === 2) this.pos = createVector(-30, random(height));
+                    else this.pos = createVector(width + 30, random(height));
+                } else {
+                    this.pos = createVector(width / 2 + random(-15, 15), height / 2 + random(-15, 15));
+                }
+            }
+
+            update() {
+                this.pos.add(this.vel);
+                this.lifespan -= 1.5;
+
+                if (this.isInput && this.lifespan > 0 && dist(this.pos.x, this.pos.y, this.target.x, this.target.y) < this.vel.mag() * 1.5) {
+                    this.pos = this.target.copy();
+                    this.lifespan = 0;
+                    corePulse = 35;
+                    triggerProcessingVisuals(this.color, this.token);
+                }
+            }
+
+            display() {
+                noStroke();
+                fill(red(this.color), green(this.color), blue(this.color), this.lifespan);
+                textSize(this.textSize);
+                textAlign(CENTER, CENTER);
+                text(this.token, this.pos.x, this.pos.y);
+            }
+
+            isDead() {
+                let padding = this.tokenWidth / 2 + 10;
+                return this.lifespan < 0 || this.pos.x < -padding || this.pos.x > width + padding || this.pos.y < -padding || this.pos.y > height + padding;
+            }
+        }
+
+        // コア内部処理ビジュアルクラス (変更なし)
+        class ProcessingVisual {
+            constructor(parentColor, inputToken) {
+                let angle = random(TWO_PI);
+                let radius = random(coreSize * 0.4);
+                this.pos = createVector(width / 2 + cos(angle) * radius, height / 2 + sin(angle) * radius);
+                this.char = random(processingChars);
+                this.textSize = random(12, 20);
+                this.color = color(
+                    red(parentColor) + random(-50, 50),
+                    green(parentColor) + random(-50, 50),
+                    blue(parentColor) + random(-50, 50),
+                    random(190, 250)
+                );
+                this.lifespan = processingDuration;
+                this.rotation = random(-PI / 3, PI / 3);
+            }
+
+            update() {
+                this.lifespan--;
+                this.pos.x += random(-1, 1);
+                this.pos.y += random(-1, 1);
+                this.rotation += random(-0.1, 0.1);
+            }
+
+            display() {
+                push();
+                translate(this.pos.x, this.pos.y);
+                rotate(this.rotation);
+                noStroke();
+                fill(red(this.color), green(this.color), blue(this.color), map(this.lifespan, 0, processingDuration, 0, alpha(this.color)));
+                textSize(this.textSize);
+                textAlign(CENTER, CENTER);
+                text(this.char, 0, 0);
+                pop();
+            }
+
+            isDead() {
+                return this.lifespan < 0;
+            }
+        }
+
+        // --- ★追加: 出力波紋クラス ---
+        class OutputWave {
+            constructor(originColor) {
+                this.pos = createVector(width / 2, height / 2);
+                this.radius = 0;
+                this.maxRadius = random(width * 0.3, width * 0.6); // 波紋の最大半径
+                this.lifespan = 100; // 波紋の寿命 (フレーム数)
+                this.color = originColor ? originColor : color(random(50, 150), random(180, 255), random(180, 255), 150); // 色を引き継ぐかランダム
+                this.strokeWeight = random(1, 3);
+            }
+
+            update() {
+                this.radius += (this.maxRadius / this.lifespan) * 1.5; // 半径を広げる
+                this.lifespan--;
+            }
+
+            display() {
+                noFill();
+                strokeWeight(this.strokeWeight);
+                // 寿命に応じて透明度と色を変化
+                let alphaValue = map(this.lifespan, 0, 100, 0, alpha(this.color));
+                stroke(red(this.color), green(this.color), blue(this.color), alphaValue);
+                ellipse(this.pos.x, this.pos.y, this.radius * 2, this.radius * 2); // 直径で指定
+            }
+
+            isDead() {
+                return this.lifespan < 0;
+            }
+        }
+
+
+        // 内部処理ビジュアル生成関数
+        let wasProcessing = false; // 直前のフレームで処理中だったか
+        function triggerProcessingVisuals(inputColor, inputToken) {
+            let numVisuals = floor(random(8, 18));
+            for (let i = 0; i < numVisuals; i++) {
+                processingVisuals.push(new ProcessingVisual(inputColor, inputToken));
+            }
+            // --- ★変更点: 出力生成時に波紋も生成 ---
+            setTimeout(() => {
+                 if (random(1) < 0.9) {
+                    let numOutputs = floor(random(1, 5));
+                    let outputColor = null; // 波紋の色を決める
+                    for(let i=0; i < numOutputs; i++){
+                        let p = new Particle(false);
+                        outputs.push(p);
+                        if (!outputColor) outputColor = p.color; // 最初の出力パーティクルの色を使う
+                    }
+                    // --- ★出力波紋生成 ---
+                    if (outputColor) {
+                        outputWaves.push(new OutputWave(outputColor));
+                    }
+                 }
+                 wasProcessing = true; // 処理が終わったフラグ
+            }, (processingDuration / frameRate()) * 1000 * 0.95 ); // 遅延時間を少し長く
+        }
+
+
+        function setup() {
+            let canvas = createCanvas(windowWidth, windowHeight);
+            canvas.parent(document.body);
+            // frameRate(30);
+        }
+
+        function draw() {
+            background(0, 0, 0, 60); // 背景の透明度を少し上げて残像を濃く
+
+            // --- ★追加: 入力ビジュアル (画面端からの線) ---
+            if (frameCount % 10 === 0) { // あまり頻繁すぎないように
+                stroke(255, 255, 255, 15); // 淡い白
+                strokeWeight(0.5);
+                let edge = floor(random(4));
+                let startX, startY, endX, endY;
+                endX = width / 2 + random(-coreSize * 0.5, coreSize * 0.5); // コア付近を終点に
+                endY = height / 2 + random(-coreSize * 0.5, coreSize * 0.5);
+                if (edge === 0) { startX = random(width); startY = 0; }
+                else if (edge === 1) { startX = random(width); startY = height; }
+                else if (edge === 2) { startX = 0; startY = random(height); }
+                else { startX = width; startY = random(height); }
+                line(startX, startY, endX, endY);
+            }
+
+            // --- AIコアの描画 ---
+            let currentCoreSize = coreSize + corePulse;
+            corePulse *= 0.94;
+            // 処理中は内側のコアの背景を変える
+            let innerCoreColor;
+            if (processingVisuals.length > 0) {
+                 // 処理中は色を明滅させる
+                 let alphaFactor = map(sin(frameCount * 0.1), -1, 1, 0.8, 1.2); // 明滅係数
+                 innerCoreColor = color(80 * alphaFactor, 80 * alphaFactor, 120 * alphaFactor, 180);
+            } else {
+                 innerCoreColor = color(60, 60, 90, 160); // 通常時の色
+            }
+            fill(255, 255, 255, 60); // 外側の円
+            noStroke();
+            ellipse(width / 2, height / 2, currentCoreSize, currentCoreSize);
+            fill(innerCoreColor); // 内側の円
+            let innerCoreSize = currentCoreSize * 0.65;
+            ellipse(width / 2, height / 2, innerCoreSize, innerCoreSize);
+
+
+            // --- ★変更点: コア内部処理ビジュアル (記号と接続線) ---
+            for (let i = processingVisuals.length - 1; i >= 0; i--) {
+                processingVisuals[i].update();
+                processingVisuals[i].display();
+
+                // --- ★追加: 処理ビジュアル間の接続線 ---
+                if (processingVisuals.length > 1 && i > 0 && frameCount % 3 === 0) { // 全て繋ぐと重いので間引く
+                    let otherIndex = floor(random(i)); // 自分より前のインデックスからランダムに選ぶ
+                    let p1 = processingVisuals[i];
+                    let p2 = processingVisuals[otherIndex];
+                    strokeWeight(0.5);
+                    // 線の色と透明度はビジュアルの寿命に連動
+                    let lineAlpha = map(p1.lifespan, 0, processingDuration, 0, 50);
+                    stroke(red(p1.color), green(p1.color), blue(p1.color), lineAlpha);
+                    line(p1.pos.x, p1.pos.y, p2.pos.x, p2.pos.y);
+                }
+
+                if (processingVisuals[i].isDead()) {
+                    processingVisuals.splice(i, 1);
+                }
+            }
+
+            // --- ★削除: テキストラベルの描画 ---
+            // textSize(18); fill(255, 255, 255, 160); noStroke(); textAlign(CENTER, CENTER);
+            // text("入力 (トークン列)", width / 2, 35);
+            // let coreLabel = ...; fill(...); text(coreLabel, width / 2, height / 2);
+            // fill(255, 255, 255, 160); text("出力 (生成トークン列)", width / 2, height - 35);
+
+             // --- ★追加: 出力波紋の更新と描画 ---
+             for (let i = outputWaves.length - 1; i >= 0; i--) {
+                outputWaves[i].update();
+                outputWaves[i].display();
+                if (outputWaves[i].isDead()) {
+                    outputWaves.splice(i, 1);
+                }
+            }
+
+
+            // --- 入力パーティクルの生成 ---
+            if (frameCount % 4 === 0 && inputs.length < 150) {
+                 let numNewInputs = floor(random(1, 3));
+                 for(let i=0; i < numNewInputs; i++){
+                    inputs.push(new Particle(true));
+                 }
+            }
+
+            // --- 入力パーティクルの更新と描画 ---
+            for (let i = inputs.length - 1; i >= 0; i--) {
+                inputs[i].update();
+                inputs[i].display();
+                if (inputs[i].isDead()) {
+                    inputs.splice(i, 1);
+                }
+            }
+
+             // --- 出力パーティクルの更新と描画 ---
+            for (let i = outputs.length - 1; i >= 0; i--) {
+                outputs[i].update();
+                outputs[i].display();
+                if (outputs[i].isDead()) {
+                    outputs.splice(i, 1);
+                }
+            }
+
+             // 処理が終わった瞬間のフラグをリセット
+             if (wasProcessing && processingVisuals.length === 0) {
+                 wasProcessing = false;
+             }
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            inputs.forEach(p => {
+                p.pos.x = constrain(p.pos.x, 0, width);
+                p.pos.y = constrain(p.pos.y, 0, height);
+                p.target = createVector(width / 2, height / 2);
+                if(p.isInput && p.lifespan > 0){
+                     p.vel = p5.Vector.sub(p.target, p.pos);
+                     p.vel.normalize();
+                     p.vel.mult(random(1.5, 3.5));
+                }
+             });
+             outputs.forEach(p => {
+                 p.pos.x = constrain(p.pos.x, 0, width);
+                 p.pos.y = constrain(p.pos.y, 0, height);
+             });
+             processingVisuals.forEach(pv => {
+                 let angle = random(TWO_PI);
+                 let radius = random(coreSize * 0.4);
+                 pv.pos = createVector(width / 2 + cos(angle) * radius, height / 2 + sin(angle) * radius);
+             });
+             // 波紋の位置もリセット（中心なので影響は少ないが念のため）
+             outputWaves.forEach(ow => {
+                 ow.pos = createVector(width / 2, height / 2);
+             });
+        }
+
+    </script>
+</body>
+</html>
